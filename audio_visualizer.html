@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Audio Visualizer with Instrument Detection</title>
+    <style>
+        body { margin: 0; padding: 0; background: #000; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; overflow: hidden; color: white; font-family: Arial, sans-serif; }
+        #visualizer { width: 100%; height: 70%; }
+        #controls { display: flex; justify-content: space-around; width: 100%; padding: 20px; box-sizing: border-box; flex-wrap: wrap; }
+        .control { display: flex; flex-direction: column; align-items: center; margin: 10px; }
+        input[type="range"] { width: 200px; margin: 10px 0; }
+        input[type="color"] { width: 50px; height: 50px; border: none; padding: 0; }
+        #song-info { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; max-width: calc(100% - 20px); }
+        #song-name { margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100% - 220px); }
+        #volume-control { width: 100px; }
+        #file-input-wrapper { position: absolute; top: 40px; left: 10px; }
+        #mode-switch { position: absolute; top: 10px; right: 10px; padding: 10px; background: #333; border: none; color: white; cursor: pointer; }
+        #instrument-volumes { display: none; position: absolute; top: 50px; right: 10px; background: rgba(0, 0, 0, 0.7); padding: 10px; border-radius: 5px; }
+        .instrument-volume { display: flex; align-items: center; margin: 5px 0; }
+        .instrument-volume label { width: 100px; }
+    </style>
+</head>
+<body>
+    <div id="song-info">
+        <span id="song-name">No song selected</span>
+        <input type="range" id="volume-control" min="0" max="1" step="0.1" value="1">
+    </div>
+    <div id="file-input-wrapper">
+        <input type="file" id="audioInput" accept="audio/*">
+    </div>
+    <button id="mode-switch">Switch Mode</button>
+    <div id="instrument-volumes">
+        <div class="instrument-volume">
+            <label for="guitar-volume">Guitar:</label>
+            <input type="range" id="guitar-volume" min="0" max="1" step="0.1" value="1">
+        </div>
+        <div class="instrument-volume">
+            <label for="bass-volume">Bass Guitar:</label>
+            <input type="range" id="bass-volume" min="0" max="1" step="0.1" value="1">
+        </div>
+        <div class="instrument-volume">
+            <label for="drums-volume">Drums:</label>
+            <input type="range" id="drums-volume" min="0" max="1" step="0.1" value="1">
+        </div>
+        <div class="instrument-volume">
+            <label for="vocals-volume">Vocals:</label>
+            <input type="range" id="vocals-volume" min="0" max="1" step="0.1" value="1">
+        </div>
+    </div>
+    <canvas id="visualizer"></canvas>
+    <div id="controls">
+        <div class="control">
+            <label for="band1Sensitivity">Bass Sensitivity</label>
+            <input type="range" id="band1Sensitivity" min="1" max="5" step="0.1" value="1">
+            <input type="color" id="band1Color" value="#ff0000">
+        </div>
+        <div class="control">
+            <label for="band2Sensitivity">Mid Sensitivity</label>
+            <input type="range" id="band2Sensitivity" min="1" max="5" step="0.1" value="1">
+            <input type="color" id="band2Color" value="#00ff00">
+        </div>
+        <div class="control">
+            <label for="band3Sensitivity">Treble Sensitivity</label>
+            <input type="range" id="band3Sensitivity" min="1" max="5" step="0.1" value="1">
+            <input type="color" id="band3Color" value="#0000ff">
+        </div>
+        <div class="control" style="display: none;">
+            <label for="band4Sensitivity">Vocals Sensitivity</label>
+            <input type="range" id="band4Sensitivity" min="1" max="5" step="0.1" value="1">
+            <input type="color" id="band4Color" value="#ffff00">
+        </div>
+    </div>
+    <script>
+        let audioContext;
+        const canvas = document.getElementById('visualizer');
+        const ctx = canvas.getContext('2d');
+        let audioSource = null;
+        let analyser = null;
+        let audioElement = null;
+        let isDefaultMode = true;
+        let guitarGain, bassGain, drumsGain, vocalsGain;
+
+        function setupAudioContext(newAudioElement) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+            if (audioSource) {
+                audioSource.disconnect();
+            }
+            if (audioElement) {
+                audioElement.pause();
+            }
+            audioElement = newAudioElement;
+            audioSource = audioContext.createMediaElementSource(audioElement);
+            analyser = audioContext.createAnalyser();
+            
+            // Create gain nodes for each instrument
+            guitarGain = audioContext.createGain();
+            bassGain = audioContext.createGain();
+            drumsGain = audioContext.createGain();
+            vocalsGain = audioContext.createGain();
+
+            // Connect the audio source to the gain nodes
+            audioSource.connect(guitarGain);
+            audioSource.connect(bassGain);
+            audioSource.connect(drumsGain);
+            audioSource.connect(vocalsGain);
+
+            // Connect the gain nodes to the analyser
+            guitarGain.connect(analyser);
+            bassGain.connect(analyser);
+            drumsGain.connect(analyser);
+            vocalsGain.connect(analyser);
+
+            analyser.connect(audioContext.destination);
+            analyser.fftSize = 2048;
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight * 0.7;
+        }
+
+        function drawBand(dataArray, centerX, centerY, innerRadius, outerRadius, color, sensitivity) {
+            const segmentAngle = (Math.PI * 2) / dataArray.length;
+            const bandWidth = outerRadius - innerRadius;
+
+            ctx.save();
+            ctx.translate(centerX, centerY);
+
+            for (let i = 0; i < dataArray.length; i++) {
+                const barHeight = (dataArray[i] / 255) * bandWidth * sensitivity;
+                const angle = i * segmentAngle;
+
+                ctx.fillStyle = color;
+                
+                ctx.beginPath();
+                ctx.moveTo(
+                    Math.cos(angle) * innerRadius,
+                    Math.sin(angle) * innerRadius
+                );
+                ctx.lineTo(
+                    Math.cos(angle) * (innerRadius + barHeight),
+                    Math.sin(angle) * (innerRadius + barHeight)
+                );
+                ctx.arc(0, 0, innerRadius + barHeight, angle, angle + segmentAngle);
+                ctx.lineTo(
+                    Math.cos(angle + segmentAngle) * innerRadius,
+                    Math.sin(angle + segmentAngle) * innerRadius
+                );
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        function getInstrumentData(dataArray) {
+            const bufferLength = dataArray.length;
+            const guitarData = new Uint8Array(bufferLength);
+            const bassData = new Uint8Array(bufferLength);
+            const drumsData = new Uint8Array(bufferLength);
+            const vocalsData = new Uint8Array(bufferLength);
+
+            for (let i = 0; i < bufferLength; i++) {
+                const frequency = i * audioContext.sampleRate / analyser.fftSize;
+                if (frequency < 80) {
+                    bassData[i] = dataArray[i];
+                } else if (frequency < 250) {
+                    drumsData[i] = dataArray[i];
+                } else if (frequency < 2000) {
+                    guitarData[i] = dataArray[i];
+                } else {
+                    vocalsData[i] = dataArray[i];
+                }
+            }
+
+            return [guitarData, bassData, drumsData, vocalsData];
+        }
+
+        function drawVisualization(dataArray, centerX, centerY, radius) {
+            const bufferLength = dataArray.length;
+            const bandSize = Math.floor(bufferLength / (isDefaultMode ? 3 : 4));
+
+            const sensitivities = [
+                parseFloat(document.getElementById('band1Sensitivity').value),
+                parseFloat(document.getElementById('band2Sensitivity').value),
+                parseFloat(document.getElementById('band3Sensitivity').value),
+                parseFloat(document.getElementById('band4Sensitivity').value)
+            ];
+
+            const colors = [
+                document.getElementById('band1Color').value,
+                document.getElementById('band2Color').value,
+                document.getElementById('band3Color').value,
+                document.getElementById('band4Color').value
+            ];
+
+            if (isDefaultMode) {
+                for (let i = 0; i < 3; i++) {
+                    const start = i * bandSize;
+                    const end = (i + 1) * bandSize;
+                    const bandData = dataArray.slice(start, end);
+                    const innerRadius = radius * (0.2 + i * 0.2);
+                    const outerRadius = radius * (0.4 + i * 0.2);
+                    drawBand(bandData, centerX, centerY, innerRadius, outerRadius, colors[i], sensitivities[i]);
+                }
+            } else {
+                const [guitarData, bassData, drumsData, vocalsData] = getInstrumentData(dataArray);
+                const instruments = [guitarData, bassData, drumsData, vocalsData];
+                for (let i = 0; i < 4; i++) {
+                    const innerRadius = radius * (0.2 + i * 0.2);
+                    const outerRadius = radius * (0.4 + i * 0.2);
+                    drawBand(instruments[i], centerX, centerY, innerRadius, outerRadius, colors[i], sensitivities[i]);
+                }
+            }
+        }
+
+        function draw() {
+            requestAnimationFrame(draw);
+            if (analyser) {
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                analyser.getByteFrequencyData(dataArray);
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                const radius = Math.min(canvas.width, canvas.height) * 0.35;
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+
+                drawVisualization(dataArray, centerX, centerY, radius);
+            }
+        }
+
+        document.getElementById('audioInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            const audio = new Audio();
+            audio.src = URL.createObjectURL(file);
+            audio.addEventListener('canplay', function() {
+                setupAudioContext(audio);
+                audio.play();
+                resizeCanvas();
+                draw();
+                document.getElementById('song-name').textContent = file.name;
+            });
+        });
+
+        document.getElementById('volume-control').addEventListener('input', function(e) {
+            if (audioElement) {
+                audioElement.volume = e.target.value;
+            }
+        });
+
+        document.getElementById('mode-switch').addEventListener('click', function() {
+            isDefaultMode = !isDefaultMode;
+            const controls = document.querySelectorAll('.control');
+            controls[3].style.display = isDefaultMode ? 'none' : 'flex';
+            document.getElementById('instrument-volumes').style.display = isDefaultMode ? 'none' : 'block';
+            updateLabels();
+        });
+
+        function updateLabels() {
+            const labels = document.querySelectorAll('.control label');
+            if (isDefaultMode) {
+                labels[0].textContent = 'Bass Sensitivity';
+                labels[1].textContent = 'Mid Sensitivity';
+                labels[2].textContent = 'Treble Sensitivity';
+            } else {
+                labels[0].textContent = 'Guitar Sensitivity';
+                labels[1].textContent = 'Bass Guitar Sensitivity';
+                labels[2].textContent = 'Drums Sensitivity';
+                labels[3].textContent = 'Vocals Sensitivity';
+            }
+        }
+
+        // Add event listeners for instrument volume controls
+        document.getElementById('guitar-volume').addEventListener('input', function(e) {
+            if (guitarGain) guitarGain.gain.setValueAtTime(e.target.value, audioContext.currentTime);
+        });
+
+        document.getElementById('bass-volume').addEventListener('input', function(e) {
+            if (bassGain) bassGain.gain.setValueAtTime(e.target.value, audioContext.currentTime);
+        });
+
+        document.getElementById('drums-volume').addEventListener('input', function(e) {
+            if (drumsGain) drumsGain.gain.setValueAtTime(e.target.value, audioContext.currentTime);
+        });
+
+        document.getElementById('vocals-volume').addEventListener('input', function(e) {
+            if (vocalsGain) vocalsGain.gain.setValueAtTime(e.target.value, audioContext.currentTime);
+        });
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+        draw();
+        updateLabels();
+    </script>
+</body>
+</html>
